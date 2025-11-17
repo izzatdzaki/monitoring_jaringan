@@ -1,34 +1,12 @@
 /**
  * Network Device & Traffic Monitoring Service
- * 
- * Monitoring semua device di switch termasuk website/app yang mereka akses
+ * Using Mikrotik API Protocol (Socket-based)
  */
 
-import { getMikrotikConfig, getMikrotikAuth } from './mikrotik-config';
+import { getMikrotikConfig } from './mikrotik-config';
 
-async function fetchMikrotik(url: string, init?: RequestInit) {
-  const config = getMikrotikConfig();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000); // 30 detik timeout
-
-  try {
-    const response = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-      headers: {
-        ...init?.headers,
-        Authorization: getMikrotikAuth(config),
-        'Content-Type': 'application/json',
-      },
-    });
-    clearTimeout(timeout);
-    return response;
-  } catch (error) {
-    clearTimeout(timeout);
-    console.warn(`Mikrotik API timeout/error (${url}):`, error instanceof Error ? error.message : String(error));
-    throw error;
-  }
-}
+// @ts-ignore - No type definitions available
+const Mikrotik = require('mikrotik');
 
 // Types
 export interface Device {
@@ -86,238 +64,203 @@ export interface BPJSStats {
 }
 
 /**
- * Get all connected devices from ARP table (Real Mikrotik API)
+ * Create Mikrotik API connection
+ */
+async function createMikrotikConnection() {
+  const config = getMikrotikConfig();
+  
+  try {
+    const conn = new Mikrotik({
+      host: config.host,
+      user: config.user,
+      password: config.pass,
+      port: config.port,
+      timeout: 15000,
+    });
+    
+    console.log(`[Mikrotik] Connected to ${config.host}:${config.port}`);
+    return conn;
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[Mikrotik] Connection failed: ${errorMsg}`);
+    throw error;
+  }
+}
+
+/**
+ * Get all connected devices from ARP table
  */
 export async function getConnectedDevices(): Promise<Device[]> {
   try {
-    const config = getMikrotikConfig();
+    const conn = await createMikrotikConnection();
     
-    console.log(`Connecting to Mikrotik at http://${config.host}:${config.port}`);
+    console.log('[Mikrotik] Querying ARP table...');
+    const arpData = await conn.query('/ip/arp', {});
+    
+    conn.close();
 
-    // Query ARP table dari Mikrotik
-    const response = await fetchMikrotik(
-      `http://${config.host}:${config.port}/rest/ip/arp`
-    );
-
-    if (!response.ok) {
-      console.warn(`Mikrotik returned status ${response.status}, using mock data`);
+    if (!arpData || arpData.length === 0) {
+      console.warn('[Mikrotik] No ARP data, using mock data');
       return getMockDevices();
     }
 
-    const arpData = await response.json();
-    
-    if (!Array.isArray(arpData) || arpData.length === 0) {
-      console.warn('No ARP data from Mikrotik, using mock data');
-      return getMockDevices();
-    }
-
-    console.log(`Successfully fetched ${arpData.length} devices from Mikrotik`);
-
-    // Transform ARP data to Device format
-    const devices: Device[] = arpData.map((entry: any) => ({
-      id: entry['.id'] || entry['mac-address'],
-      ip: entry.address,
-      mac: entry['mac-address'],
-      hostname: entry.comment || `Device-${entry.address}`,
-      interface: entry.interface,
+    const devices: Device[] = arpData.map((arp: Record<string, string>) => ({
+      id: arp['.id'] || arp.address || '',
+      ip: arp.address || '',
+      mac: arp['mac-address'] || '',
+      hostname: arp.comment || `Device-${arp.address}` || '',
+      interface: arp.interface || 'unknown',
       uploadSpeed: Math.random() * 5,
       downloadSpeed: Math.random() * 10,
       totalUp: Math.floor(Math.random() * 1000000000),
       totalDown: Math.floor(Math.random() * 5000000000),
-      isOnline: entry.dynamic === true || entry.disabled === false,
+      isOnline: arp.disabled !== 'true',
       lastSeen: new Date().toISOString(),
-      firstSeen: new Date(Date.now() - Math.random() * 604800000).toISOString(),
-      connections: Math.floor(Math.random() * 50),
     }));
 
+    console.log(`[Mikrotik] Found ${devices.length} devices from ARP`);
     return devices.length > 0 ? devices : getMockDevices();
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error(`Error fetching devices from Mikrotik (${errorMsg}), falling back to mock data`);
+    console.error(`[Mikrotik] Error fetching devices: ${errorMsg}, using mock data`);
     return getMockDevices();
   }
 }
 
 /**
- * Get traffic for specific device (Real Mikrotik API)
+ * Get device traffic/speed from queue
  */
-export async function getDeviceTraffic(ip: string): Promise<{
-  uploadSpeed: number;
-  downloadSpeed: number;
-}> {
+export async function getDeviceTraffic(ip: string): Promise<{ uploadSpeed: number; downloadSpeed: number }> {
   try {
-    const config = getMikrotikConfig();
+    const conn = await createMikrotikConnection();
+    
+    console.log(`[Mikrotik] Querying traffic for ${ip}...`);
+    const queues = await conn.query('/queue/simple', {
+      '.proplist': '.id,target,total-packet-mark,parent,disabled',
+    });
+    
+    conn.close();
 
-    // Query queue simple stats
-    const response = await fetchMikrotik(
-      `http://${config.host}:${config.port}/rest/queue/simple?target=${ip}`
-    );
+    let uploadSpeed = 0;
+    let downloadSpeed = 0;
 
-    if (!response.ok) {
-      throw new Error('Failed to fetch queue data');
+    for (const queue of queues) {
+      if (queue.target && queue.target.includes(ip)) {
+        // Extract speeds from max-limit field (format: "uploadMbps/downloadMbps")
+        if (queue['max-limit']) {
+          const limits = queue['max-limit'].split('/');
+          if (limits.length === 2) {
+            downloadSpeed = parseInt(limits[0] || '0') / 1000000;
+            uploadSpeed = parseInt(limits[1] || '0') / 1000000;
+          }
+        }
+        break;
+      }
     }
 
-    const queueData = await response.json();
-
-    if (queueData.length > 0) {
-      const queue = queueData[0];
-      return {
-        uploadSpeed: parseFloat(queue['max-limit']?.split('/')[1] || '0') / 1000000,
-        downloadSpeed: parseFloat(queue['max-limit']?.split('/')[0] || '0') / 1000000,
-      };
-    }
-
-    return { uploadSpeed: 0, downloadSpeed: 0 };
+    return { uploadSpeed, downloadSpeed };
   } catch (error) {
-    console.error('Error fetching device traffic:', error);
+    console.warn(`[Mikrotik] Error fetching traffic for ${ip}`);
     return { uploadSpeed: 0, downloadSpeed: 0 };
   }
 }
 
 /**
- * Get devices filtered by interface
- */
-export async function getInterfaceDevices(
-  interfaceName: string
-): Promise<Device[]> {
-  const devices = await getConnectedDevices();
-  return devices.filter((d) => d.interface === interfaceName);
-}
-
-/**
- * Get Layer7 DPI statistics (Real Mikrotik API)
+ * Get Layer7 application statistics
  */
 export async function getLayer7Statistics(): Promise<Layer7Stats> {
   try {
-    const config = getMikrotikConfig();
+    const conn = await createMikrotikConnection();
+    
+    console.log('[Mikrotik] Querying Layer7 statistics...');
+    const rules = await conn.query('/ip/firewall/mangle', {
+      '.proplist': '.id,chain,protocol,dst-address,bytes,packets,comment',
+    });
 
-    // Query firewall mangle rules for Layer7 tracking
-    const response = await fetchMikrotik(
-      `http://${config.host}:${config.port}/rest/ip/firewall/mangle`
-    );
+    conn.close();
 
-    if (!response.ok) {
-      throw new Error('Failed to fetch mangle rules');
-    }
-
-    const mangleData = await response.json();
-
-    // Process mangle rules to extract Layer7 stats
     const stats: Layer7Stats = {};
 
-    mangleData.forEach((rule: any) => {
-      if (rule['new-packet-mark']) {
-        const mark = rule['new-packet-mark'];
-        if (!stats[mark]) {
-          stats[mark] = {
-            dataUsed: Math.floor(Math.random() * 5000000000),
-            devices: Math.floor(Math.random() * 20),
-            percentage: 0,
-          };
-        }
+    for (const rule of rules) {
+      const appName = rule.comment || 'Unknown';
+      const dataUsed = parseInt(rule.bytes || '0');
+      
+      if (!stats[appName]) {
+        stats[appName] = {
+          dataUsed: 0,
+          devices: 0,
+          percentage: 0,
+        };
       }
-    });
+      
+      stats[appName].dataUsed += dataUsed;
+      stats[appName].devices += 1;
+    }
 
     // Calculate percentages
-    const total = Object.values(stats).reduce((sum, stat) => sum + stat.dataUsed, 0);
-    Object.values(stats).forEach((stat) => {
-      stat.percentage = total > 0 ? (stat.dataUsed / total) * 100 : 0;
-    });
+    const totalData = Object.values(stats).reduce((sum, stat) => sum + stat.dataUsed, 0);
+    for (const app in stats) {
+      stats[app].percentage = totalData > 0 ? (stats[app].dataUsed / totalData) * 100 : 0;
+    }
 
     return Object.keys(stats).length > 0 ? stats : getDefaultLayer7Stats();
   } catch (error) {
-    console.error('Error fetching Layer7 stats:', error);
+    console.warn('[Mikrotik] Error fetching Layer7 stats, using defaults');
     return getDefaultLayer7Stats();
   }
 }
 
 function getDefaultLayer7Stats(): Layer7Stats {
   return {
-    facebook: {
-      dataUsed: 2100000000, // 2.1GB
-      devices: 12,
-      percentage: 25,
-    },
-    youtube: {
-      dataUsed: 4200000000, // 4.2GB
-      devices: 10,
-      percentage: 50,
-    },
-    whatsapp: {
-      dataUsed: 420000000, // 420MB
-      devices: 14,
-      percentage: 5,
-    },
-    instagram: {
-      dataUsed: 840000000, // 840MB
-      devices: 8,
-      percentage: 10,
-    },
-    gaming: {
-      dataUsed: 168000000, // 168MB
-      devices: 3,
-      percentage: 2,
-    },
-    streaming: {
-      dataUsed: 336000000, // 336MB
-      devices: 4,
-      percentage: 4,
-    },
+    youtube: { dataUsed: 4200000000, devices: 10, percentage: 50 },
+    facebook: { dataUsed: 2100000000, devices: 12, percentage: 25 },
+    whatsapp: { dataUsed: 420000000, devices: 14, percentage: 5 },
+    instagram: { dataUsed: 840000000, devices: 8, percentage: 10 },
+    streaming: { dataUsed: 336000000, devices: 4, percentage: 4 },
+    gaming: { dataUsed: 168000000, devices: 3, percentage: 2 },
   };
 }
 
 /**
- * Monitor akses ke BPJS Kesehatan API (Real Mikrotik API)
- * https://apijkn.bpjs-kesehatan.go.id/
+ * Get BPJS Healthcare API access logs
  */
 export async function getBPJSAccessLog(): Promise<BPJSStats> {
   try {
-    const config = getMikrotikConfig();
-
-    // Query firewall rules yang track BPJS access
-    const response = await fetchMikrotik(
-      `http://${config.host}:${config.port}/rest/ip/firewall/mangle`
-    );
-
-    if (!response.ok) {
-      throw new Error('Failed to fetch BPJS rules');
-    }
-
-    const rules = await response.json();
-
-    // Filter untuk BPJS related rules
-    const bpjsRules = rules.filter((rule: any) =>
-      rule.comment?.toLowerCase().includes('bpjs') ||
-      rule['dst-address']?.includes('apijkn.bpjs-kesehatan')
-    );
-
-    // Get all devices untuk map IP ke hostname
-    const allDevices = await getConnectedDevices();
-
-    // Transform ke BPJSAccess format
-    const accessLog: BPJSAccess[] = bpjsRules.map((_rule: any, idx: number) => {
-      const device = allDevices[idx % allDevices.length];
-      return {
-        ip: device.ip,
-        hostname: device.hostname,
-        mac: device.mac,
-        accessedAt: new Date(Date.now() - Math.random() * 86400000).toISOString(),
-        duration: Math.floor(Math.random() * 3600),
-        dataTransferred: Math.floor(Math.random() * 500000),
-        endpoint: `/apijkn/api/peserta/nomorktp/${Math.random().toString().slice(2, 18)}`,
-        isAuthorized: isAuthorizedBPJSAccess(device.hostname),
-      };
+    const conn = await createMikrotikConnection();
+    
+    console.log('[Mikrotik] Querying BPJS access logs...');
+    const natRules = await conn.query('/ip/firewall/nat', {
+      '.proplist': '.id,chain,dst-address,to-addresses,comment,disabled',
     });
+
+    conn.close();
+
+    const accessLog: BPJSAccess[] = [];
+    
+    for (const rule of natRules) {
+      if (rule.comment && rule.comment.toUpperCase().includes('BPJS')) {
+        accessLog.push({
+          ip: rule['to-addresses'] || '',
+          hostname: rule.comment || 'BPJS-API',
+          mac: '',
+          accessedAt: new Date().toISOString(),
+          duration: 0,
+          dataTransferred: 0,
+          endpoint: 'apijkn.bpjs-kesehatan.go.id',
+          isAuthorized: rule.disabled !== 'true',
+        });
+      }
+    }
 
     return {
       totalAccess: accessLog.length,
-      devicesAccessing: new Set(accessLog.map((log) => log.ip)).size,
-      lastAccess: accessLog[0]?.accessedAt || new Date().toISOString(),
+      devicesAccessing: accessLog.length,
+      lastAccess: new Date().toISOString(),
       accessLog,
-      suspiciousActivities: accessLog.filter((log) => !log.isAuthorized),
+      suspiciousActivities: [],
     };
   } catch (error) {
-    console.error('Error fetching BPJS access log:', error);
+    console.warn('[Mikrotik] Error fetching BPJS access log');
     return {
       totalAccess: 0,
       devicesAccessing: 0,
@@ -329,152 +272,127 @@ export async function getBPJSAccessLog(): Promise<BPJSStats> {
 }
 
 /**
- * Get devices yang mengakses BPJS
+ * Get detailed device info
  */
-export async function getBPJSAccessingDevices(): Promise<Device[]> {
-  const allDevices = await getConnectedDevices();
-  const bpjsStats = await getBPJSAccessLog();
-
-  const accessingIPs = new Set(bpjsStats.accessLog.map((log) => log.ip));
-
-  return allDevices.filter((device) => accessingIPs.has(device.ip));
-}
-
-/**
- * Check if device is authorized to access BPJS
- * Authorized devices: Accounting, HR, Medical Staff
- */
-export function isAuthorizedBPJSAccess(hostname: string): boolean {
-  const authorizedDevices = [
-    'PC-Accounting',
-    'PC-HR',
-    'PC-Medical',
-    'PC-Doctor',
-    'Server-Main',
-  ];
-
-  return authorizedDevices.some(
-    (authorized) =>
-      hostname.toLowerCase().includes(authorized.toLowerCase())
-  );
-}
-
-/**
- * Get detailed information for specific device (Real Mikrotik API)
- */
-export async function getDeviceDetail(ip: string): Promise<DeviceDetail | null> {
+export async function getDeviceDetail(ip: string): Promise<DeviceDetail> {
   try {
-    const config = getMikrotikConfig();
     const devices = await getConnectedDevices();
-    const device = devices.find((d) => d.ip === ip);
+    let device = devices.find(d => d.ip === ip);
 
-    if (!device) return null;
-
-    // Get traffic untuk device ini
-    const traffic = await getDeviceTraffic(ip);
-
-    // Fetch aplikasi yang diakses dari firewall mangle rules
-    let applications: ApplicationUsage[] = [];
-
-    try {
-      const response = await fetchMikrotik(
-        `http://${config.host}:${config.port}/rest/ip/firewall/mangle`
-      );
-
-      if (response.ok) {
-        const rules = await response.json();
-        // Extract aplikasi dari rule names
-        const appNames = [
-          ...new Set(rules.map((r: any) => r['new-packet-mark']).filter(Boolean)),
-        ] as string[];
-
-        applications = appNames.slice(0, 6).map((name) => ({
-          name: name.charAt(0).toUpperCase() + name.slice(1),
-          dataUsed: Math.floor(Math.random() * 500000000),
-          accessCount: Math.floor(Math.random() * 1000),
-          lastAccess: new Date(Date.now() - Math.random() * 3600000).toISOString(),
-        }));
-      }
-    } catch {
-      // Fallback jika API gagal
-      applications = [];
+    if (!device) {
+      return {
+        id: 'unknown',
+        ip,
+        mac: 'unknown',
+        hostname: 'Unknown Device',
+        interface: 'unknown',
+        uploadSpeed: 0,
+        downloadSpeed: 0,
+        totalUp: 0,
+        totalDown: 0,
+        isOnline: false,
+        applications: [],
+      };
     }
+
+    // Get traffic stats
+    const traffic = await getDeviceTraffic(ip);
+    device.uploadSpeed = traffic.uploadSpeed;
+    device.downloadSpeed = traffic.downloadSpeed;
+
+    // Get Layer7 applications
+    const layer7Stats = await getLayer7Statistics();
+    const applications: ApplicationUsage[] = Object.entries(layer7Stats)
+      .filter(([_name, stat]) => stat.devices > 0)
+      .slice(0, 5)
+      .map(([name, stat]) => ({
+        name,
+        dataUsed: stat.dataUsed,
+        accessCount: stat.devices,
+      }));
 
     return {
       ...device,
-      ...traffic,
       applications,
     };
   } catch (error) {
-    console.error('Error fetching device detail:', error);
-    return null;
+    console.error(`[Mikrotik] Error fetching device detail for ${ip}`);
+    return {
+      id: 'unknown',
+      ip,
+      mac: 'unknown',
+      hostname: 'Unknown Device',
+      interface: 'unknown',
+      uploadSpeed: 0,
+      downloadSpeed: 0,
+      totalUp: 0,
+      totalDown: 0,
+      isOnline: false,
+      applications: [],
+    };
   }
 }
 
 /**
- * Mock device data for testing
+ * Mock devices for development/fallback
  */
 export function getMockDevices(): Device[] {
   return [
     {
-      id: 'PC-1',
-      ip: '192.168.1.100',
-      mac: '00:11:22:33:44:01',
-      hostname: 'PC-Accounting',
-      interface: 'ether4',
-      uploadSpeed: 0.5,
-      downloadSpeed: 1.2,
-      totalUp: 50000000,
-      totalDown: 2500000000,
+      id: '1',
+      ip: '192.168.2.10',
+      mac: '00:11:22:33:44:55',
+      hostname: 'PC-01-Admin',
+      interface: 'ether2',
+      uploadSpeed: 2.5,
+      downloadSpeed: 8.3,
+      totalUp: 1024 * 1024 * 500,
+      totalDown: 1024 * 1024 * 1500,
       isOnline: true,
       lastSeen: new Date().toISOString(),
-      firstSeen: new Date(Date.now() - 86400000).toISOString(),
       connections: 12,
     },
     {
-      id: 'PC-2',
-      ip: '192.168.1.101',
-      mac: '00:11:22:33:44:02',
-      hostname: 'PC-HR',
-      interface: 'ether4',
-      uploadSpeed: 0.3,
-      downloadSpeed: 0.8,
-      totalUp: 30000000,
-      totalDown: 1500000000,
+      id: '2',
+      ip: '192.168.2.11',
+      mac: '00:11:22:33:44:66',
+      hostname: 'Laptop-Dokter-01',
+      interface: 'ether3',
+      uploadSpeed: 1.2,
+      downloadSpeed: 5.6,
+      totalUp: 1024 * 1024 * 300,
+      totalDown: 1024 * 1024 * 800,
       isOnline: true,
       lastSeen: new Date().toISOString(),
-      firstSeen: new Date(Date.now() - 172800000).toISOString(),
       connections: 8,
     },
     {
-      id: 'PC-3',
-      ip: '192.168.1.102',
-      mac: '00:11:22:33:44:03',
-      hostname: 'PC-Marketing',
+      id: '3',
+      ip: '192.168.2.12',
+      mac: '00:11:22:33:44:77',
+      hostname: 'Printer-01',
       interface: 'ether4',
-      uploadSpeed: 2.1,
-      downloadSpeed: 3.5,
-      totalUp: 210000000,
-      totalDown: 3200000000,
+      uploadSpeed: 0.1,
+      downloadSpeed: 0.3,
+      totalUp: 1024 * 1024 * 50,
+      totalDown: 1024 * 1024 * 150,
       isOnline: true,
       lastSeen: new Date().toISOString(),
-      firstSeen: new Date(Date.now() - 259200000).toISOString(),
-      connections: 18,
+      connections: 2,
     },
     {
-      id: 'Server',
-      ip: '192.168.1.10',
-      mac: '00:11:22:33:44:10',
-      hostname: 'Server-Main',
-      interface: 'ether3',
-      uploadSpeed: 5.0,
-      downloadSpeed: 8.0,
-      totalUp: 500000000,
-      totalDown: 12000000000,
+      id: '4',
+      ip: '192.168.2.13',
+      mac: '00:11:22:33:44:88',
+      hostname: 'Server-BPJS',
+      interface: 'ether5',
+      uploadSpeed: 3.5,
+      downloadSpeed: 9.8,
+      totalUp: 1024 * 1024 * 2000,
+      totalDown: 1024 * 1024 * 3500,
       isOnline: true,
       lastSeen: new Date().toISOString(),
-      firstSeen: new Date(Date.now() - 604800000).toISOString(),
-      connections: 45,
+      connections: 25,
     },
   ];
 }

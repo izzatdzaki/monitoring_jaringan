@@ -1,6 +1,10 @@
 /**
  * Mikrotik Configuration & Connection Checker
+ * Using Mikrotik API Protocol (Socket-based, not HTTP REST)
  */
+
+// @ts-ignore - No type definitions available for mikrotik
+const Mikrotik = require('mikrotik');
 
 export interface MikrotikConfig {
   host: string;
@@ -30,67 +34,73 @@ export function getMikrotikConfig(): MikrotikConfig {
 }
 
 /**
- * Check connection to Mikrotik
+ * Create Mikrotik API connection
+ */
+export async function createMikrotikConnection() {
+  const config = getMikrotikConfig();
+  
+  try {
+    console.log(`[Mikrotik] Creating connection to ${config.host}:${config.port}`);
+    
+    return new Mikrotik({
+      host: config.host,
+      user: config.user,
+      password: config.pass,
+      port: config.port,
+      timeout: 10000,
+    });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[Mikrotik] Connection creation failed: ${errorMsg}`);
+    throw error;
+  }
+}
+
+/**
+ * Check connection to Mikrotik via API Protocol
  */
 export async function checkMikrotikConnection(): Promise<ConnectionCheckResult> {
   const startTime = Date.now();
   const config = getMikrotikConfig();
 
   try {
-    const auth = `Basic ${Buffer.from(`${config.user}:${config.pass}`).toString('base64')}`;
-    const url = `http://${config.host}:${config.port}/rest/system/identity`;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
-    const response = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: {
-        Authorization: auth,
-        'Content-Type': 'application/json',
-      },
+    console.log(`[Connection Check] Connecting to ${config.host}:${config.port} using API Protocol`);
+    
+    const connection = new Mikrotik({
+      host: config.host,
+      user: config.user,
+      password: config.pass,
+      port: config.port,
+      timeout: 10000,
     });
 
-    clearTimeout(timeout);
+    // Test query to verify connection
+    const result = await connection.query('/system/identity', {});
+    
+    connection.close();
     const responseTime = Date.now() - startTime;
 
-    if (response.ok) {
-      const data = await response.json();
-      return {
-        isConnected: true,
-        message: `Connected to Mikrotik (${data.name || 'Unknown Router'})`,
-        timestamp: new Date().toISOString(),
-        responseTime,
-      };
-    } else if (response.status === 401) {
-      return {
-        isConnected: false,
-        message: 'Authentication failed - Check credentials',
-        timestamp: new Date().toISOString(),
-        responseTime,
-        error: `HTTP ${response.status}`,
-      };
-    } else {
-      return {
-        isConnected: false,
-        message: `HTTP error ${response.status}`,
-        timestamp: new Date().toISOString(),
-        responseTime,
-        error: `HTTP ${response.status}`,
-      };
-    }
+    console.log(`[Connection Check] ✓ Connected successfully`);
+    
+    return {
+      isConnected: true,
+      message: `Connected to Mikrotik (${result[0]?.name || 'Unknown Router'})`,
+      timestamp: new Date().toISOString(),
+      responseTime,
+    };
   } catch (error) {
     const responseTime = Date.now() - startTime;
     const errorMsg = error instanceof Error ? error.message : String(error);
 
-    if (errorMsg.includes('ECONNREFUSED')) {
+    console.log(`[Connection Check] ✗ Error after ${responseTime}ms: ${errorMsg}`);
+
+    if (errorMsg.includes('ECONNREFUSED') || errorMsg.includes('timeout')) {
       return {
         isConnected: false,
-        message: `Cannot connect to Mikrotik at ${config.host}:${config.port} - Connection refused`,
+        message: `Cannot connect to Mikrotik at ${config.host}:${config.port} - Connection timed out or refused`,
         timestamp: new Date().toISOString(),
         responseTime,
-        error: 'ECONNREFUSED',
+        error: 'Connection timeout - Mikrotik API service may be unresponsive',
       };
     } else if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('getaddrinfo')) {
       return {
@@ -98,15 +108,15 @@ export async function checkMikrotikConnection(): Promise<ConnectionCheckResult> 
         message: `Cannot resolve Mikrotik host: ${config.host}`,
         timestamp: new Date().toISOString(),
         responseTime,
-        error: 'ENOTFOUND',
+        error: 'Host unreachable',
       };
-    } else if (errorMsg.includes('abort')) {
+    } else if (errorMsg.includes('invalid user') || errorMsg.includes('authentication')) {
       return {
         isConnected: false,
-        message: `Connection timeout - Mikrotik not responding within 10 seconds`,
+        message: `Authentication failed - Check username and password`,
         timestamp: new Date().toISOString(),
         responseTime,
-        error: 'TIMEOUT',
+        error: 'Invalid credentials',
       };
     }
 
