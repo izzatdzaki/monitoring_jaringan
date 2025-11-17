@@ -13,14 +13,36 @@ interface MikrotikConfig {
 
 function getMikrotikConfig(): MikrotikConfig {
   return {
-    host: process.env.NEXT_PUBLIC_MIKROTIK_HOST || '192.168.88.1',
-    user: process.env.NEXT_PUBLIC_MIKROTIK_USER || 'admin',
-    pass: process.env.NEXT_PUBLIC_MIKROTIK_PASS || '',
+    host: process.env.MT_HOST || process.env.NEXT_PUBLIC_MIKROTIK_HOST || '192.168.88.1',
+    user: process.env.MT_USER || process.env.NEXT_PUBLIC_MIKROTIK_USER || 'admin',
+    pass: process.env.MT_PASS || process.env.NEXT_PUBLIC_MIKROTIK_PASS || '',
   };
 }
 
 function getMikrotikAuth(config: MikrotikConfig): string {
   return `Basic ${Buffer.from(`${config.user}:${config.pass}`).toString('base64')}`;
+}
+
+async function fetchMikrotik(url: string, config: MikrotikConfig, init?: RequestInit) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15 detik timeout
+
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...init?.headers,
+        Authorization: getMikrotikAuth(config),
+        'Content-Type': 'application/json',
+      },
+    });
+    clearTimeout(timeout);
+    return response;
+  } catch (error) {
+    clearTimeout(timeout);
+    throw error;
+  }
 }
 
 // Types
@@ -86,15 +108,10 @@ export async function getConnectedDevices(): Promise<Device[]> {
     const config = getMikrotikConfig();
 
     // Query ARP table dari Mikrotik
-    const response = await fetch(
-      `http://${config.host}:8728/rest/ip/arp?authenticated=true`,
-      {
-        method: 'GET',
-        headers: {
-          Authorization: getMikrotikAuth(config),
-          'Content-Type': 'application/json',
-        },
-      }
+    const response = await fetchMikrotik(
+      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/arp`,
+      config,
+      { method: 'GET' }
     );
 
     if (!response.ok) {
@@ -139,15 +156,10 @@ export async function getDeviceTraffic(ip: string): Promise<{
     const config = getMikrotikConfig();
 
     // Query queue simple stats
-    const response = await fetch(
-      `http://${config.host}:8728/rest/queue/simple?target=${ip}`,
-      {
-        method: 'GET',
-        headers: {
-          Authorization: getMikrotikAuth(config),
-          'Content-Type': 'application/json',
-        },
-      }
+    const response = await fetchMikrotik(
+      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/queue/simple?target=${ip}`,
+      config,
+      { method: 'GET' }
     );
 
     if (!response.ok) {
@@ -189,15 +201,10 @@ export async function getLayer7Statistics(): Promise<Layer7Stats> {
     const config = getMikrotikConfig();
 
     // Query firewall mangle rules for Layer7 tracking
-    const response = await fetch(
-      `http://${config.host}:8728/rest/ip/firewall/mangle`,
-      {
-        method: 'GET',
-        headers: {
-          Authorization: getMikrotikAuth(config),
-          'Content-Type': 'application/json',
-        },
-      }
+    const response = await fetchMikrotik(
+      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/firewall/mangle`,
+      config,
+      { method: 'GET' }
     );
 
     if (!response.ok) {
@@ -279,15 +286,10 @@ export async function getBPJSAccessLog(): Promise<BPJSStats> {
     const config = getMikrotikConfig();
 
     // Query firewall rules yang track BPJS access
-    const response = await fetch(
-      `http://${config.host}:8728/rest/ip/firewall/mangle`,
-      {
-        method: 'GET',
-        headers: {
-          Authorization: getMikrotikAuth(config),
-          'Content-Type': 'application/json',
-        },
-      }
+    const response = await fetchMikrotik(
+      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/firewall/mangle`,
+      config,
+      { method: 'GET' }
     );
 
     if (!response.ok) {
@@ -388,15 +390,10 @@ export async function getDeviceDetail(ip: string): Promise<DeviceDetail | null> 
     let applications: ApplicationUsage[] = [];
 
     try {
-      const response = await fetch(
-        `http://${config.host}:8728/rest/ip/firewall/mangle`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: getMikrotikAuth(config),
-            'Content-Type': 'application/json',
-          },
-        }
+      const response = await fetchMikrotik(
+        `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/firewall/mangle`,
+        config,
+        { method: 'GET' }
       );
 
       if (response.ok) {

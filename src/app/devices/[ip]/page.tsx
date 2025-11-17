@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 
@@ -39,13 +39,7 @@ export default function DeviceDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchDeviceDetail();
-    const interval = setInterval(fetchDeviceDetail, 2000);
-    return () => clearInterval(interval);
-  }, [ip]);
-
-  const fetchDeviceDetail = async () => {
+  const fetchDeviceDetail = useCallback(async () => {
     try {
       const response = await fetch(
         `/api/devices?action=device-detail&ip=${encodeURIComponent(ip)}`
@@ -62,7 +56,13 @@ export default function DeviceDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [ip]);
+
+  useEffect(() => {
+    fetchDeviceDetail();
+    const interval = setInterval(fetchDeviceDetail, 2000);
+    return () => clearInterval(interval);
+  }, [fetchDeviceDetail]);
 
   if (loading) {
     return (
@@ -94,10 +94,6 @@ export default function DeviceDetailPage() {
   }
 
   const totalData = device.totalDown + device.totalUp;
-  const totalConnections = device.applications.reduce(
-    (sum, app) => sum + app.accessCount,
-    0
-  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-6">
