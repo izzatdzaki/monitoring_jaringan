@@ -12,14 +12,24 @@ Panduan lengkap untuk sistem **Monitoring Traffic Mikrotik dengan Next.js**.
 3. **[MIKROTIK_SETUP.md](MIKROTIK_SETUP.md)** - Konfigurasi Mikrotik RouterOS
 4. **[ENV_SETUP.md](ENV_SETUP.md)** - Setup Environment Variables
 
+## 📱 Monitoring Features
+
+5. **[DEVICE_MONITORING.md](DEVICE_MONITORING.md)** - Monitor semua PC client & aplikasi yang dibuka
+6. **[ADMIN_PANEL.md](ADMIN_PANEL.md)** - Admin dashboard untuk tracking akses & logs
+
 ## 📡 Teknis & Development
 
-5. **[ARCHITECTURE.md](ARCHITECTURE.md)** - Arsitektur sistem
-6. **[API.md](API.md)** - API Endpoints documentation
+7. **[ARCHITECTURE.md](ARCHITECTURE.md)** - Arsitektur sistem
+8. **[API.md](API.md)** - API Endpoints documentation
+
+## 📋 Reference & Troubleshooting
+
+9. **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Panduan cepat untuk penggunaan sehari-hari
+10. **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Diagnosis & solusi masalah common
 
 ## 🚀 Production & Deployment
 
-7. **[DEPLOYMENT.md](DEPLOYMENT.md)** - Deploy ke production
+11. **[DEPLOYMENT.md](DEPLOYMENT.md)** - Deploy ke production
 
 ---
 
@@ -160,9 +170,11 @@ MT_PORT=8728                # API Port
 |-------|----------|
 | Initial Setup | QUICKSTART.md, MIKROTIK_SETUP.md |
 | Configuration | ENV_SETUP.md |
+| Monitoring Devices | DEVICE_MONITORING.md, ADMIN_PANEL.md |
+| Daily Usage | QUICK_REFERENCE.md |
+| Issues & Fix | TROUBLESHOOTING.md |
 | Development | ARCHITECTURE.md, API.md |
 | Deployment | DEPLOYMENT.md |
-| API Details | API.md |
 | Full Reference | README.md |
 
 ---
@@ -284,9 +296,13 @@ After successful setup:
 - **[README.md](README.md)** - Complete documentation
 - **[MIKROTIK_SETUP.md](MIKROTIK_SETUP.md)** - Mikrotik configuration guide
 - **[ENV_SETUP.md](ENV_SETUP.md)** - Environment variables guide
+- **[DEVICE_MONITORING.md](DEVICE_MONITORING.md)** - Device & application monitoring guide
+- **[ADMIN_PANEL.md](ADMIN_PANEL.md)** - Admin dashboard & access logs
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick reference for daily use
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture & design
 - **[API.md](API.md)** - API endpoints documentation
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** - Production deployment guide
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Troubleshooting & diagnosis
 - **[INDEX.md](INDEX.md)** - This file (documentation index)
 
 ---
