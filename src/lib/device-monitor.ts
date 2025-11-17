@@ -4,28 +4,12 @@
  * Monitoring semua device di switch termasuk website/app yang mereka akses
  */
 
-// Mikrotik Config Helper
-interface MikrotikConfig {
-  host: string;
-  user: string;
-  pass: string;
-}
+import { getMikrotikConfig, getMikrotikAuth } from './mikrotik-config';
 
-function getMikrotikConfig(): MikrotikConfig {
-  return {
-    host: process.env.MT_HOST || process.env.NEXT_PUBLIC_MIKROTIK_HOST || '192.168.88.1',
-    user: process.env.MT_USER || process.env.NEXT_PUBLIC_MIKROTIK_USER || 'admin',
-    pass: process.env.MT_PASS || process.env.NEXT_PUBLIC_MIKROTIK_PASS || '',
-  };
-}
-
-function getMikrotikAuth(config: MikrotikConfig): string {
-  return `Basic ${Buffer.from(`${config.user}:${config.pass}`).toString('base64')}`;
-}
-
-async function fetchMikrotik(url: string, config: MikrotikConfig, init?: RequestInit) {
+async function fetchMikrotik(url: string, init?: RequestInit) {
+  const config = getMikrotikConfig();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // 15 detik timeout
+  const timeout = setTimeout(() => controller.abort(), 30000); // 30 detik timeout
 
   try {
     const response = await fetch(url, {
@@ -41,6 +25,7 @@ async function fetchMikrotik(url: string, config: MikrotikConfig, init?: Request
     return response;
   } catch (error) {
     clearTimeout(timeout);
+    console.warn(`Mikrotik API timeout/error (${url}):`, error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -106,20 +91,27 @@ export interface BPJSStats {
 export async function getConnectedDevices(): Promise<Device[]> {
   try {
     const config = getMikrotikConfig();
+    
+    console.log(`Connecting to Mikrotik at http://${config.host}:${config.port}`);
 
     // Query ARP table dari Mikrotik
     const response = await fetchMikrotik(
-      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/arp`,
-      config,
-      { method: 'GET' }
+      `http://${config.host}:${config.port}/rest/ip/arp`
     );
 
     if (!response.ok) {
-      console.warn('Failed to fetch from Mikrotik, using mock data');
+      console.warn(`Mikrotik returned status ${response.status}, using mock data`);
       return getMockDevices();
     }
 
     const arpData = await response.json();
+    
+    if (!Array.isArray(arpData) || arpData.length === 0) {
+      console.warn('No ARP data from Mikrotik, using mock data');
+      return getMockDevices();
+    }
+
+    console.log(`Successfully fetched ${arpData.length} devices from Mikrotik`);
 
     // Transform ARP data to Device format
     const devices: Device[] = arpData.map((entry: any) => ({
@@ -140,7 +132,8 @@ export async function getConnectedDevices(): Promise<Device[]> {
 
     return devices.length > 0 ? devices : getMockDevices();
   } catch (error) {
-    console.error('Error fetching devices from Mikrotik:', error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`Error fetching devices from Mikrotik (${errorMsg}), falling back to mock data`);
     return getMockDevices();
   }
 }
@@ -157,9 +150,7 @@ export async function getDeviceTraffic(ip: string): Promise<{
 
     // Query queue simple stats
     const response = await fetchMikrotik(
-      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/queue/simple?target=${ip}`,
-      config,
-      { method: 'GET' }
+      `http://${config.host}:${config.port}/rest/queue/simple?target=${ip}`
     );
 
     if (!response.ok) {
@@ -202,9 +193,7 @@ export async function getLayer7Statistics(): Promise<Layer7Stats> {
 
     // Query firewall mangle rules for Layer7 tracking
     const response = await fetchMikrotik(
-      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/firewall/mangle`,
-      config,
-      { method: 'GET' }
+      `http://${config.host}:${config.port}/rest/ip/firewall/mangle`
     );
 
     if (!response.ok) {
@@ -287,9 +276,7 @@ export async function getBPJSAccessLog(): Promise<BPJSStats> {
 
     // Query firewall rules yang track BPJS access
     const response = await fetchMikrotik(
-      `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/firewall/mangle`,
-      config,
-      { method: 'GET' }
+      `http://${config.host}:${config.port}/rest/ip/firewall/mangle`
     );
 
     if (!response.ok) {
@@ -391,9 +378,7 @@ export async function getDeviceDetail(ip: string): Promise<DeviceDetail | null> 
 
     try {
       const response = await fetchMikrotik(
-        `http://${config.host}:${process.env.MT_PORT || 8728}/rest/ip/firewall/mangle`,
-        config,
-        { method: 'GET' }
+        `http://${config.host}:${config.port}/rest/ip/firewall/mangle`
       );
 
       if (response.ok) {
